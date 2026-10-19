@@ -1,6 +1,6 @@
 // App-Gerüst offline verfügbar halten; Preise immer live laden.
-const CACHE = 'sprit-rechner-v2';
-const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest', 'icon.svg'];
+const CACHE = 'sprit-rechner-v3';
+const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'vendor/qrcode.js'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

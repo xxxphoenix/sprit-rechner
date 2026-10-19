@@ -174,3 +174,10 @@ label { display: block; min-width: 0; }
   .grid2 { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+
+/* Übertragung */
+.share__qr { align-self: center; width: min(260px, 100%); background: #ffffff; padding: 8px; border-radius: 10px; }
+.share__qr svg { display: block; width: 100%; height: auto; }
+.share .sources li { display: flex; align-items: center; gap: 8px; }
+#share-link { font-size: .8rem; color: var(--muted); }
+.vrow__body .pill { align-self: flex-start; }

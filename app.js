@@ -128,7 +128,7 @@ const DEFAULT_STATE = {
 };
 
 let state = load();
-const session = { location: null, locStatus: 'idle', stations: [], notes: [], loading: false, fetchedAt: null, refId: null, editing: null, confirmDelete: null, usingDemo: false };
+const session = { location: null, locStatus: 'idle', stations: [], notes: [], loading: false, fetchedAt: null, refId: null, editing: null, confirmDelete: null, usingDemo: false, share: null, incoming: null };
 
 function load() {
   try {
@@ -343,13 +343,71 @@ function stationList(res) {
   </section>`;
 }
 
+// ---------- Übertragung auf ein anderes Gerät ----------
+// Die Daten stecken im Teil hinter „#“ und werden daher nie an einen Server geschickt.
+function b64urlEncode(str) {
+  return btoa(unescape(encodeURIComponent(str))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function b64urlDecode(str) {
+  const b = str.replace(/-/g, '+').replace(/_/g, '/');
+  return decodeURIComponent(escape(atob(b + '==='.slice((b.length + 3) % 4))));
+}
+function shareLink(withKey) {
+  const payload = { v: 1, vehicles: state.vehicles.map(({ plate, plateCountry, name, consumption, fuel }) => ({ plate, plateCountry, name, consumption, fuel })) };
+  if (withKey && state.settings.tkKey) payload.tkKey = state.settings.tkKey;
+  return location.href.split('#')[0] + '#import=' + b64urlEncode(JSON.stringify(payload));
+}
+function qrSvg(text) {
+  if (typeof qrcode !== 'function') return '';
+  const qr = qrcode(0, 'L'); qr.addData(text); qr.make();
+  return qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+}
+function shareCard() {
+  const withKey = session.share.withKey;
+  const link = shareLink(withKey);
+  const svg = qrSvg(link);
+  return `<section class="card share">
+    <h2>Fahrzeuge übertragen</h2>
+    <p class="small">Scanne den Code mit der Kamera des anderen Geräts und öffne den Link. Dort tippst du auf „Übernehmen“.</p>
+    ${svg ? `<div class="share__qr">${svg}</div>` : '<p class="small muted">Der QR-Code konnte nicht geladen werden. Kopiere stattdessen den Link.</p>'}
+    ${state.settings.tkKey ? `<label class="switch" for="share-key"><input id="share-key" type="checkbox" ${withKey ? 'checked' : ''} data-share-key><span>Tankerkönig-Schlüssel mitnehmen</span></label>` : ''}
+    <div class="row-end"><button class="btn" data-act="copy-link">Link kopieren</button></div>
+    <input id="share-link" type="text" readonly value="${esc(link)}" aria-label="Übertragungs-Link">
+  </section>`;
+}
+function incomingCard() {
+  const inc = session.incoming;
+  return `<section class="card share">
+    <h2>Fahrzeuge übernehmen?</h2>
+    <p class="small">Von einem anderen Gerät kommen ${inc.vehicles.length} Fahrzeuge${inc.tkKey ? ' und der Tankerkönig-Schlüssel' : ''}. Deine bisherigen Fahrzeuge auf diesem Gerät werden ersetzt.</p>
+    <ul class="sources">${inc.vehicles.map(v => `<li>${plateHtml(v, true)} ${esc(v.name)}</li>`).join('')}</ul>
+    <div class="row-end"><button class="btn btn--ghost" data-act="import-no">Abbrechen</button><button class="btn" data-act="import-yes">Übernehmen</button></div>
+  </section>`;
+}
+function readIncoming() {
+  const m = location.hash.match(/^#import=([\w-]+)$/);
+  if (!m) return;
+  try {
+    const data = JSON.parse(b64urlDecode(m[1]));
+    const vehicles = (data.vehicles || []).filter(v => v && v.name && FUELS[v.fuel] && +v.consumption > 0).map((v, i) => ({
+      id: 'v' + Date.now() + i, plate: String(v.plate || ''), plateCountry: v.plateCountry === 'A' ? 'A' : 'D',
+      name: String(v.name), consumption: +v.consumption, fuel: v.fuel, example: false,
+    }));
+    if (vehicles.length) { session.incoming = { vehicles, tkKey: typeof data.tkKey === 'string' ? data.tkKey : '' }; view = 'fahrzeuge'; }
+  } catch (e) { /* ungültiger Link */ }
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* egal */ }
+}
+
 function viewVehicles() {
   const e = session.editing;
   return `
+    ${session.incoming ? incomingCard() : ''}
     <section class="card">
       <div class="row-between"><h2>Fahrzeuge</h2><button class="btn" data-act="new">Neues Fahrzeug</button></div>
       ${state.vehicles.some(v => v.example) ? '<p class="muted small">Die Fahrzeuge mit „Beispiel“ sind Platzhalter. Tippe auf Bearbeiten und trage deine eigenen Daten ein.</p>' : ''}
+      <button class="btn btn--ghost" data-act="share">${session.share ? 'Übertragung schließen' : 'Auf anderes Gerät übertragen'}</button>
     </section>
+    ${session.share ? shareCard() : ''}
     ${e ? vehicleForm(e) : ''}
     <section class="vlist">
       ${state.vehicles.map(v => `<article class="card vrow${v.id === state.activeId ? ' is-on' : ''}">
@@ -423,10 +481,28 @@ function onClick(e) {
   if (d.act === 'locate') return locate();
   if (d.act === 'new') { session.editing = { id: '', plate: '', plateCountry: 'D', name: '', consumption: '', fuel: 'e5' }; render(); return; }
   if (d.act === 'cancel') { session.editing = null; render(); return; }
+  if (d.act === 'share') { session.share = session.share ? null : { withKey: true }; render(); return; }
+  if (d.act === 'copy-link') {
+    const inp = document.getElementById('share-link');
+    const done = () => { t.textContent = 'Kopiert'; };
+    if (navigator.clipboard) navigator.clipboard.writeText(inp.value).then(done, () => { inp.select(); });
+    else { inp.select(); document.execCommand('copy'); done(); }
+    return;
+  }
+  if (d.act === 'import-no') { session.incoming = null; render(); return; }
+  if (d.act === 'import-yes') {
+    const inc = session.incoming;
+    state.vehicles = inc.vehicles; state.activeId = inc.vehicles[0].id;
+    if (inc.tkKey) state.settings.tkKey = inc.tkKey;
+    session.incoming = null; session.refId = null; save();
+    view = 'rechner'; render(); loadStations(); return;
+  }
 }
 
 function onInput(e) {
-  const t = e.target, key = t.dataset.set; if (!key) return;
+  const t = e.target;
+  if ('shareKey' in t.dataset) { if (e.type === 'change') { session.share.withKey = t.checked; render(); } return; }
+  const key = t.dataset.set; if (!key) return;
   if (key === 'roundTrip') state.roundTrip = t.checked;
   else state[key] = +t.value;
   save();
@@ -463,6 +539,7 @@ function start() {
   document.addEventListener('input', onInput);
   document.addEventListener('change', onInput);
   document.addEventListener('submit', onSubmit);
+  readIncoming();
   render();
   locate();
   if ('serviceWorker' in navigator && !window.SPRIT_PREVIEW) {
