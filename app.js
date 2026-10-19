@@ -138,7 +138,7 @@ function load() {
       return { ...DEFAULT_STATE, ...s, settings: { ...DEFAULT_STATE.settings, ...(s.settings || {}) } };
     }
   } catch (e) { /* Speicher nicht verfügbar */ }
-  return structuredClone(DEFAULT_STATE);
+  return JSON.parse(JSON.stringify(DEFAULT_STATE));
 }
 function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) { /* ignorieren */ }
@@ -153,7 +153,7 @@ function priceHtml(p) {
   const s = nf(3).format(p);
   return `<span class="price">${s.slice(0, -1)}<sup>${s.slice(-1)}</sup></span>`;
 }
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 function plateHtml(v, small) {
   return `<span class="plate${small ? ' plate--s' : ''}"><span class="plate__eu">${esc(v.plateCountry || 'D')}</span><span class="plate__no">${esc(v.plate || '—')}</span></span>`;
 }
@@ -376,7 +376,7 @@ function vehicleForm(v) {
     </div>
     <label for="f-name"><span class="label">Bezeichnung</span><input id="f-name" name="name" required value="${esc(v.name)}" placeholder="z. B. VW Golf"></label>
     <div class="grid2">
-      <label for="f-cons"><span class="label">Verbrauch (l/100 km)</span><input id="f-cons" name="consumption" type="number" inputmode="decimal" step="0.1" min="1" max="40" required value="${v.consumption ?? ''}"></label>
+      <label for="f-cons"><span class="label">Verbrauch (l/100 km)</span><input id="f-cons" name="consumption" type="number" inputmode="decimal" step="0.1" min="1" max="40" required value="${v.consumption == null ? '' : v.consumption}"></label>
       <label for="f-fuel"><span class="label">Kraftstoff</span><select id="f-fuel" name="fuel">${Object.entries(FUELS).map(([k, f]) => `<option value="${k}" ${v.fuel === k ? 'selected' : ''}>${f.label}</option>`).join('')}</select></label>
     </div>
     <p class="muted small">In Österreich wird für E5 und E10 der Preis für Super 95 verwendet.</p>

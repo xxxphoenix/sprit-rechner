@@ -129,7 +129,7 @@ label { display: block; min-width: 0; }
 .switch { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
 .switch input { width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--accent); flex: none; }
 
-.notes { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: var(--r); background: color-mix(in srgb, var(--led) 18%, var(--surface)); border: 1px solid color-mix(in srgb, var(--led) 45%, var(--line)); font-size: .9rem; }
+.notes { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: var(--r); background: var(--surface); border: 1px solid var(--led); background: color-mix(in srgb, var(--led) 18%, var(--surface)); border: 1px solid color-mix(in srgb, var(--led) 45%, var(--line)); font-size: .9rem; }
 
 /* Ergebnis */
 .verdict { border-radius: var(--r); padding: 18px; display: flex; flex-direction: column; gap: 8px; }

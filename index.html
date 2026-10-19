@@ -17,7 +17,13 @@
 <style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}</style>
 </head>
 <body>
-<div id="app"></div>
+<div id="app"><p style="padding:24px 16px">Sprit-Rechner wird geladen …</p></div>
+<script>
+window.onerror = function (msg) {
+  var el = document.getElementById('app');
+  if (el && !el.querySelector('.main')) el.innerHTML = '<p style="padding:24px 16px">Die App konnte auf diesem Gerät nicht starten. Bitte den Browser aktualisieren.<br><small>' + String(msg).replace(/</g, '&lt;') + '</small></p>';
+};
+</script>
 <script src="app.js"></script>
 </body>
 </html>
