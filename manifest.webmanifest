@@ -1,0 +1,14 @@
+{
+  "name": "Sprit-Rechner",
+  "short_name": "Sprit",
+  "description": "Lohnt sich der Umweg zur günstigeren Tankstelle?",
+  "lang": "de",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#eef2f1",
+  "theme_color": "#0e5c68",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
