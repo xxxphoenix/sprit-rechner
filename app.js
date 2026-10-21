@@ -3,11 +3,12 @@
 
 // ---------- Kraftstoffe ----------
 // tk = Tankerkönig-Sorte (DE), ec = E-Control-Sorte (AT; dort gibt es kein eigenes E10),
-// fr = Feld der französischen Open-Data-Preise (SP95 = E5, Gazole = Diesel)
+// fr = Feld der französischen Open-Data-Preise (SP95 = E5, Gazole = Diesel),
+// it = Spalte in den Italien-Kacheln (Benzina, Gasolio; ein eigenes E10 gibt es dort nicht)
 const FUELS = {
-  e5:     { label: 'Super E5',  tk: 'e5',     ec: 'SUP', fr: 'sp95' },
-  e10:    { label: 'Super E10', tk: 'e10',    ec: 'SUP', fr: 'e10' },
-  diesel: { label: 'Diesel',    tk: 'diesel', ec: 'DIE', fr: 'gazole' },
+  e5:     { label: 'Super E5',  tk: 'e5',     ec: 'SUP', fr: 'sp95',   it: 5 },
+  e10:    { label: 'Super E10', tk: 'e10',    ec: 'SUP', fr: 'e10',    it: 5 },
+  diesel: { label: 'Diesel',    tk: 'diesel', ec: 'DIE', fr: 'gazole', it: 6 },
 };
 
 // ---------- Preisquellen ----------
@@ -78,6 +79,28 @@ const PROVIDERS = [
         lat: s.geom.lat, lng: s.geom.lon, open: true,
         price: +s[f + '_prix'], country: 'FR',
       }));
+    },
+  },
+  {
+    id: 'mimit',
+    country: 'IT',
+    name: 'Osservaprezzi carburanti (Italien)',
+    credit: 'Preise Italien: Ministero delle Imprese e del Made in Italy (MIMIT), täglich um 8 Uhr, IODL 2.0',
+    covers: (lat, lng) => lat > 35.4 && lat < 47.2 && lng > 6.5 && lng < 18.6,
+    // Die Daten liegen als Kacheln in dieser App (data/it), ein GitHub-Workflow erneuert sie täglich.
+    async search({ lat, lng, radius, fuel }) {
+      const col = FUELS[fuel].it;
+      const dLat = radius / 111, dLng = radius / (111 * Math.cos(lat * Math.PI / 180));
+      const keys = new Set();
+      for (const la of [lat - dLat, lat + dLat]) for (const lo of [lng - dLng, lng + dLng]) keys.add(`${Math.floor(la)}_${Math.floor(lo)}`);
+      const tiles = await Promise.all([...keys].map(k => fetch(`data/it/${k}.json`).then(r => (r.ok ? r.json() : null)).catch(() => null)));
+      const twoWeeksAgo = Date.now() - 14 * 864e5;
+      const out = [];
+      tiles.forEach(t => t && t.stations.forEach(s => {
+        if (!s[col] || (s[7] && Date.parse(s[7]) < twoWeeksAgo)) return;
+        out.push({ id: 'it-' + s[0], name: titleCase(s[1]), sub: '', address: s[2], lat: s[3], lng: s[4], open: true, price: s[col], country: 'IT' });
+      }));
+      return out;
     },
   },
 ];
@@ -351,7 +374,7 @@ async function loadStations() {
   session.loading = true; session.notes = []; render();
   if (!jobs.length) {
     session.loading = false; session.stations = [];
-    session.notes = ['Für diesen Standort gibt es noch keine Preisquelle. Unterstützt werden Deutschland, Österreich und Frankreich.'];
+    session.notes = ['Für diesen Standort gibt es noch keine Preisquelle. Unterstützt werden Deutschland, Österreich, Frankreich und Italien.'];
     return render();
   }
   const results = await Promise.allSettled(jobs.map(({ p, pt }) => p.search({ lat: pt.lat, lng: pt.lng, radius: pt.rad, fuel: v.fuel, settings: state.settings })));
@@ -468,7 +491,7 @@ const navUrl = (s) => session.dest
 
 function stationList(res) {
   return `<section class="list" aria-label="Tankstellen">
-    ${res.rows.map(s => {
+    ${res.rows.filter((s, i) => i < 25 || s.isRef).map(s => {
       const cls = s.isRef ? 'is-ref' : s.net >= 0.5 ? 'is-good' : s.net < 0 ? 'is-bad' : '';
       return `<article class="st ${cls}">
         <div class="st__price">${priceHtml(s.price)}<span class="st__unit">€/l</span></div>
@@ -547,7 +570,7 @@ function readIncoming() {
   try {
     const data = JSON.parse(b64urlDecode(m[1]));
     const vehicles = (data.vehicles || []).filter(v => v && v.name && FUELS[v.fuel] && +v.consumption > 0).map((v, i) => ({
-      id: 'v' + Date.now() + i, plate: String(v.plate || ''), plateCountry: ['A', 'F'].includes(v.plateCountry) ? v.plateCountry : 'D',
+      id: 'v' + Date.now() + i, plate: String(v.plate || ''), plateCountry: ['A', 'F', 'I'].includes(v.plateCountry) ? v.plateCountry : 'D',
       name: String(v.name), consumption: +v.consumption, fuel: v.fuel, example: false,
     }));
     if (vehicles.length) { session.incoming = { vehicles, tkKey: typeof data.tkKey === 'string' ? data.tkKey : '' }; view = 'fahrzeuge'; }
@@ -587,14 +610,14 @@ function vehicleForm(v) {
     <h2>${v.id ? 'Fahrzeug bearbeiten' : 'Neues Fahrzeug'}</h2>
     <div class="grid2">
       <label for="f-plate"><span class="label">Kennzeichen</span><input id="f-plate" name="plate" required value="${esc(v.plate)}" placeholder="BGL-AB 123" autocapitalize="characters"></label>
-      <label for="f-pc"><span class="label">Land</span><select id="f-pc" name="plateCountry">${['D', 'A', 'F'].map(c => `<option ${v.plateCountry === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+      <label for="f-pc"><span class="label">Land</span><select id="f-pc" name="plateCountry">${['D', 'A', 'F', 'I'].map(c => `<option ${v.plateCountry === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
     </div>
     <label for="f-name"><span class="label">Bezeichnung</span><input id="f-name" name="name" required value="${esc(v.name)}" placeholder="z. B. VW Golf"></label>
     <div class="grid2">
       <label for="f-cons"><span class="label">Verbrauch (l/100 km)</span><input id="f-cons" name="consumption" type="number" inputmode="decimal" step="0.1" min="1" max="40" required value="${v.consumption == null ? '' : v.consumption}"></label>
       <label for="f-fuel"><span class="label">Kraftstoff</span><select id="f-fuel" name="fuel">${Object.entries(FUELS).map(([k, f]) => `<option value="${k}" ${v.fuel === k ? 'selected' : ''}>${f.label}</option>`).join('')}</select></label>
     </div>
-    <p class="muted small">In Österreich wird für E5 und E10 der Preis für Super 95 verwendet, in Frankreich steht E5 für SP95.</p>
+    <p class="muted small">In Österreich wird für E5 und E10 der Preis für Super 95 verwendet, in Frankreich steht E5 für SP95, in Italien gilt für E5 und E10 der Preis für Benzina.</p>
     <div class="row-end"><button type="button" class="btn btn--ghost" data-act="cancel">Abbrechen</button><button class="btn" type="submit">Speichern</button></div>
   </form>`;
 }

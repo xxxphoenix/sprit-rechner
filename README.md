@@ -22,6 +22,7 @@ Ortssuche: Photon (komoot), ersatzweise Nominatim (OpenStreetMap).
 - DE: Tankerkönig / MTS-K, braucht kostenlosen API-Schlüssel (https://onboarding.tankerkoenig.de/)
 - AT: E-Control Spritpreisrechner, ohne Schlüssel (E5/E10 → Super 95)
 - FR: prix-carburants (data.economie.gouv.fr, Datensatz prix-des-carburants-en-france-flux-instantane-v2), ohne Schlüssel (E5 → SP95, Diesel → Gazole); Preise älter als 7 Tage werden ignoriert
+- IT: MIMIT Osservaprezzi (Preise um 8 Uhr). Die CSV-Dateien erlauben keinen Abruf aus dem Browser, deshalb lädt der Workflow `.github/workflows/preise-italien.yml` sie täglich, `scripts/update_it.py` schreibt Kacheln nach `data/it/` (E5/E10 → Benzina, Diesel → Gasolio, günstigster Preis je Station)
 Neues Land (z. B. wie FR): Objekt mit `covers(lat, lng)` und `search(...)` ergänzen.
 
 ## Betrieb
