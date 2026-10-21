@@ -94,6 +94,7 @@ const PROVIDERS = [
       const keys = new Set();
       for (const la of [lat - dLat, lat + dLat]) for (const lo of [lng - dLng, lng + dLng]) keys.add(`${Math.floor(la)}_${Math.floor(lo)}`);
       const tiles = await Promise.all([...keys].map(k => fetch(`data/it/${k}.json`).then(r => (r.ok ? r.json() : null)).catch(() => null)));
+      if (tiles.every(t => !t)) throw new Error('Für Italien liegen gerade keine Preise vor.');
       const twoWeeksAgo = Date.now() - 14 * 864e5;
       const out = [];
       tiles.forEach(t => t && t.stations.forEach(s => {

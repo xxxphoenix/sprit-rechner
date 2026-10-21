@@ -1,8 +1,10 @@
 name: Preise Italien aktualisieren
 
+# Der MIMIT-Server nimmt keine Verbindungen von GitHub-Rechnern an (Zeitüberschreitung beim Verbinden).
+# Deshalb vorerst nur manuell startbar; sobald ein erreichbarer Weg gefunden ist, den Zeitplan wieder einschalten:
+#  schedule:
+#    - cron: "40 7 * * *"   # täglich nach der Veröffentlichung der 8-Uhr-Preise
 on:
-  schedule:
-    - cron: "40 7 * * *"   # täglich nach der Veröffentlichung der 8-Uhr-Preise
   workflow_dispatch:
 
 permissions:
