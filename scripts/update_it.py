@@ -18,6 +18,15 @@ OUT = os.path.join(os.path.dirname(__file__), "..", "data", "it")
 
 
 def fetch(name):
+    # Der Workflow lädt die Dateien vorab mit curl (mit Wiederholungen); sonst direkt laden
+    local = os.path.join(os.environ.get("IT_CSV_DIR", ""), name)
+    if os.environ.get("IT_CSV_DIR") and os.path.exists(local):
+        with open(local, "rb") as fh:
+            raw = fh.read()
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return raw.decode("latin-1")
     req = urllib.request.Request(BASE + name, headers={"User-Agent": "sprit-rechner (github.com/xxxphoenix/sprit-rechner)"})
     with urllib.request.urlopen(req, timeout=120) as r:
         raw = r.read()

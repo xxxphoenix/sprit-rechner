@@ -16,7 +16,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: CSV-Dateien vom MIMIT laden
+        run: |
+          mkdir -p /tmp/it
+          for f in anagrafica_impianti_attivi.csv prezzo_alle_8.csv; do
+            curl -fsSL --retry 5 --retry-delay 20 --retry-all-errors --connect-timeout 60 --max-time 600 \
+              -A "Mozilla/5.0 (sprit-rechner; github.com/xxxphoenix/sprit-rechner)" \
+              -o /tmp/it/$f "https://www.mimit.gov.it/images/exportCSV/$f"
+            ls -l /tmp/it/$f && head -c 300 /tmp/it/$f && echo
+          done
       - run: python scripts/update_it.py
+        env:
+          IT_CSV_DIR: /tmp/it
       - name: Änderungen speichern
         run: |
           git config user.name "github-actions[bot]"
