@@ -13,6 +13,11 @@ Vergleich ist die nächstgelegene offene Tankstelle (oder die per „Als Verglei
 - Umwegkosten = Umweg-km × Verbrauch / 100 × Literpreis der Station
 - Netto = (Vergleichspreis − Preis) × Tankmenge − Umwegkosten; empfohlen ab 0,50 € Netto
 
+## Route
+Optional ein Ziel eingeben (Ortsname, Koordinaten oder langer Google-Maps-Link). Dann werden Tankstellen entlang der Luftlinie Start→Ziel gesucht (bis zu 9 Abfragepunkte) und der Umweg als Start→Station→Ziel minus Start→Ziel berechnet. Auf Android kann man ein Ziel in Google Maps über „Teilen“ direkt an die installierte App schicken (share_target im Manifest). Die laufende Navigation in Google Maps kann eine Web-App nicht auslesen.
+
+Ortssuche: Photon (komoot), ersatzweise Nominatim (OpenStreetMap).
+
 ## Preisquellen (`PROVIDERS` in app.js)
 - DE: Tankerkönig / MTS-K, braucht kostenlosen API-Schlüssel (https://onboarding.tankerkoenig.de/)
 - AT: E-Control Spritpreisrechner, ohne Schlüssel (E5/E10 → Super 95)

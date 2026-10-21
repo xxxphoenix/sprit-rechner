@@ -31,7 +31,7 @@ const PROVIDERS = [
         id: 'tk-' + s.id,
         name: s.brand || s.name,
         sub: s.brand ? s.name : '',
-        address: `${s.street || ''} ${s.houseNumber || ''}, ${s.postCode || ''} ${s.place || ''}`.replace(/\s+/g, ' ').trim(),
+        address: `${s.street || ''} ${s.houseNumber || ''}, ${s.postCode || ''} ${s.place || ''}`.replace(/\s+/g, ' ').replace(/ ,/g, ',').trim(),
         lat: s.lat, lng: s.lng, open: s.isOpen, price: s.price, country: 'DE',
       }));
     },
@@ -72,19 +72,40 @@ function distanceKm(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
+// Abstand eines Punkts zur geraden Linie Start→Ziel (gute Näherung für Strecken bis einige 100 km).
+function distanceToSegmentKm(p, a, b) {
+  const kx = 111.32 * Math.cos((a.lat + b.lat) / 2 * Math.PI / 180), ky = 110.57;
+  const bx = (b.lng - a.lng) * kx, by = (b.lat - a.lat) * ky;
+  const px = (p.lng - a.lng) * kx, py = (p.lat - a.lat) * ky;
+  const len2 = bx * bx + by * by;
+  const t = len2 ? Math.max(0, Math.min(1, (px * bx + py * by) / len2)) : 0;
+  return Math.hypot(px - t * bx, py - t * by);
+}
+function routePoints(a, b, radius) {
+  const total = distanceKm(a, b);
+  const n = Math.min(8, Math.max(1, Math.ceil(total / radius)));
+  const rad = Math.min(25, Math.max(radius, total / n * 0.75));
+  return Array.from({ length: n + 1 }, (_, i) => ({ lat: a.lat + (b.lat - a.lat) * i / n, lng: a.lng + (b.lng - a.lng) * i / n, rad }));
+}
+
 /**
- * Bewertet jede Tankstelle gegen die nächstgelegene (Vergleich).
- * Umweg = zusätzliche Straßen-km gegenüber dem Vergleich, optional mit Rückweg.
- * Netto = (Vergleichspreis − Preis) × Liter − Umweg-km × Verbrauch/100 × Preis.
+ * Bewertet jede Tankstelle gegen die mit dem kleinsten Umweg (Vergleich).
+ * Ohne Ziel: Umweg = Weg zur Station (mit Rückweg doppelt).
+ * Mit Ziel: Umweg = Start→Station→Ziel minus Start→Ziel.
+ * Netto = (Vergleichspreis − Preis) × Liter − Mehr-km × Verbrauch/100 × Preis.
  */
-function evaluate(stations, { consumption, liters, roadFactor, roundTrip, refId }) {
-  const open = stations.filter(s => s.open);
+function evaluate(stations, { consumption, liters, roadFactor, roundTrip, refId, origin, dest }) {
+  const open = stations.filter(s => s.open).map(s => ({
+    ...s,
+    offKm: dest && origin
+      ? Math.max(0, s.distKm + distanceKm(s, dest) - distanceKm(origin, dest)) * roadFactor
+      : s.distKm * roadFactor * (roundTrip ? 2 : 1),
+  }));
   if (!open.length) return { ref: null, rows: [] };
-  const nearest = open.reduce((a, b) => (a.distKm <= b.distKm ? a : b));
+  const nearest = open.reduce((a, b) => (a.offKm < b.offKm || (a.offKm === b.offKm && a.distKm <= b.distKm) ? a : b));
   const ref = open.find(s => s.id === refId) || nearest;
-  const legs = roundTrip ? 2 : 1;
   const rows = open.map(s => {
-    const extraKm = Math.max(0, (s.distKm - ref.distKm) * roadFactor * legs);
+    const extraKm = Math.max(0, s.offKm - ref.offKm);
     const detourCost = extraKm * consumption / 100 * s.price;
     const saving = (ref.price - s.price) * liters;
     const net = saving - detourCost;
@@ -128,7 +149,7 @@ const DEFAULT_STATE = {
 };
 
 let state = load();
-const session = { location: null, locStatus: 'idle', stations: [], notes: [], loading: false, fetchedAt: null, refId: null, editing: null, confirmDelete: null, usingDemo: false, share: null, incoming: null };
+const session = { location: null, locStatus: 'idle', stations: [], notes: [], loading: false, fetchedAt: null, refId: null, editing: null, confirmDelete: null, usingDemo: false, share: null, incoming: null, dest: null, destStatus: 'idle' };
 
 function load() {
   try {
@@ -180,20 +201,101 @@ function locate() {
   );
 }
 
+// ---------- Ortssuche ----------
+// Akzeptiert Ortsnamen, Koordinaten („47.85, 12.97“) und Google-Maps-Links.
+const COORD_RE = /(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/;
+class NotFound extends Error {}
+
+function parseInput(raw) {
+  const text = raw.trim();
+  const url = (text.match(/https?:\/\/\S+/) || [])[0];
+  if (url) {
+    if (/goo\.gl|g\.co\//.test(url)) {
+      // Kurzlinks kann der Browser nicht auflösen; meist steht der Ortsname im geteilten Text davor.
+      const rest = text.replace(url, '').replace(/\s+/g, ' ').trim();
+      return rest ? { query: rest } : { shortLink: true };
+    }
+    let u; try { u = new URL(url); } catch (e) { return { query: text }; }
+    const d = decodeURIComponent(u.href);
+    const pins = [...d.matchAll(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/g)];
+    if (pins.length) { const p = pins[pins.length - 1]; return { lat: +p[1], lng: +p[2] }; }
+    const param = u.searchParams.get('destination') || u.searchParams.get('daddr') || u.searchParams.get('q') || u.searchParams.get('query');
+    if (param) return parseInput(param);
+    const parts = u.pathname.split('/').map(p => decodeURIComponent(p.replace(/\+/g, ' '))).filter(p => p && !p.startsWith('@') && !p.startsWith('data='));
+    const i = parts.indexOf('dir') >= 0 ? parts.length - 1 : parts.indexOf('place') + 1;
+    if (i > 0 && parts[i] && parts[i] !== 'dir') return parseInput(parts[i]);
+    const at = d.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+    if (at) return { lat: +at[1], lng: +at[2] };
+    return { query: text };
+  }
+  const c = text.match(COORD_RE);
+  if (c && text.replace(COORD_RE, '').trim().length < 3) return { lat: +c[1], lng: +c[2] };
+  return { query: text };
+}
+
+async function geocode(q) {
+  const errors = [];
+  try {
+    const data = await fetchJson('https://photon.komoot.io/api/?limit=1&lang=de&q=' + encodeURIComponent(q));
+    const f = data.features && data.features[0];
+    if (f) {
+      const p = f.properties || {};
+      const label = [p.name, p.city && p.city !== p.name ? p.city : '', !p.city && p.state ? p.state : ''].filter(Boolean).join(', ');
+      return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], label: label || q };
+    }
+    errors.push('nf');
+  } catch (e) { errors.push('net'); }
+  try {
+    const [hit] = await fetchJson('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=de,at&accept-language=de&q=' + encodeURIComponent(q));
+    if (hit) return { lat: +hit.lat, lng: +hit.lon, label: hit.display_name.split(',').slice(0, 2).join(',') };
+    errors.push('nf');
+  } catch (e) { errors.push('net'); }
+  if (errors.includes('nf')) throw new NotFound(q);
+  throw new Error('offline');
+}
+
+async function resolvePlace(raw) {
+  const p = parseInput(raw);
+  if (p.shortLink) throw new Error('shortlink');
+  if (p.lat != null) return { lat: p.lat, lng: p.lng, label: `${nf(4).format(p.lat)}, ${nf(4).format(p.lng)}` };
+  return geocode(p.query);
+}
+
+function placeError(e, q) {
+  if (e instanceof NotFound) return `„${q}“ wurde nicht gefunden. Prüfe die Schreibweise oder gib Ort und Straße ein.`;
+  if (e.message === 'shortlink') return 'Kurze Google-Maps-Links (maps.app.goo.gl) kann die App nicht lesen. Tippe das Ziel als Ortsnamen ein oder öffne den Link und kopiere die lange Adresse aus dem Browser.';
+  return 'Die Ortssuche ist gerade nicht erreichbar. Prüfe die Internetverbindung und versuche es noch einmal.';
+}
+
 async function searchPlace(q) {
   if (!q.trim()) return;
   if (state.settings.demo || window.SPRIT_PREVIEW) return useDemo('In der Vorschau ist die Ortssuche nicht verfügbar.');
   session.locStatus = 'locating'; render();
   try {
-    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=de,at&q=' + encodeURIComponent(q);
-    const [hit] = await fetchJson(url);
-    if (!hit) throw new Error('Ort nicht gefunden');
-    session.location = { lat: +hit.lat, lng: +hit.lon, label: hit.display_name.split(',').slice(0, 2).join(',') };
+    session.location = await resolvePlace(q);
     session.locStatus = 'ok'; session.usingDemo = false;
     loadStations();
   } catch (e) {
     session.locStatus = 'error';
-    session.notes = [`„${q}“ wurde nicht gefunden. Prüfe die Schreibweise oder nutze den Standort.`];
+    session.notes = [placeError(e, q)];
+    render();
+  }
+}
+
+async function setDestination(q) {
+  if (!q.trim()) return;
+  if (state.settings.demo || window.SPRIT_PREVIEW) {
+    session.dest = { lat: 47.8095, lng: 13.0550, label: 'Salzburg Hbf (Beispiel)' };
+    return useDemo('Beispieldaten aktiv.');
+  }
+  session.destStatus = 'searching'; render();
+  try {
+    session.dest = await resolvePlace(q);
+    session.destStatus = 'ok'; session.refId = null;
+    loadStations();
+  } catch (e) {
+    session.destStatus = 'error';
+    session.notes = [placeError(e, q)];
     render();
   }
 }
@@ -205,7 +307,7 @@ function useDemo(reason) {
   const v = activeVehicle();
   const fuel = v ? v.fuel : 'e5';
   session.stations = DEMO_STATIONS.map(s => ({ ...s, open: true, price: s.p[fuel], distKm: distanceKm(DEMO_LOCATION, s) }))
-    .filter(s => s.distKm <= state.radius);
+    .filter(s => (session.dest ? distanceToSegmentKm(s, DEMO_LOCATION, session.dest) : s.distKm) <= state.radius);
   session.notes = [reason + ' Die Preise sind ausgedacht und zeigen nur, wie die Rechnung funktioniert.'];
   session.fetchedAt = new Date();
   render();
@@ -215,23 +317,28 @@ async function loadStations() {
   const v = activeVehicle();
   if (!session.location || !v) return render();
   if (session.usingDemo) return useDemo('Beispieldaten aktiv.');
-  const { lat, lng } = session.location;
-  const active = PROVIDERS.filter(p => p.covers(lat, lng));
+  const origin = session.location, dest = session.dest;
+  // Mit Ziel: Abfragepunkte entlang der Strecke, damit auch Tankstellen unterwegs gefunden werden.
+  const points = dest ? routePoints(origin, dest, state.radius) : [{ ...origin, rad: state.radius }];
+  const jobs = [];
+  points.forEach(pt => PROVIDERS.filter(p => p.covers(pt.lat, pt.lng)).forEach(p => jobs.push({ p, pt })));
   session.loading = true; session.notes = []; render();
-  if (!active.length) {
+  if (!jobs.length) {
     session.loading = false; session.stations = [];
     session.notes = ['Für diesen Standort gibt es noch keine Preisquelle. Unterstützt werden Deutschland und Österreich.'];
     return render();
   }
-  const results = await Promise.allSettled(active.map(p => p.search({ lat, lng, radius: state.radius, fuel: v.fuel, settings: state.settings })));
-  const all = [];
+  const results = await Promise.allSettled(jobs.map(({ p, pt }) => p.search({ lat: pt.lat, lng: pt.lng, radius: pt.rad, fuel: v.fuel, settings: state.settings })));
+  const byId = new Map();
   results.forEach((r, i) => {
-    if (r.status === 'fulfilled') all.push(...r.value);
-    else session.notes.push(r.reason && r.reason.message && !/fetch/i.test(r.reason.message)
-      ? r.reason.message
-      : `${active[i].name} ist gerade nicht erreichbar.`);
+    if (r.status === 'fulfilled') r.value.forEach(s => byId.set(s.id, s));
+    else {
+      const msg = r.reason && r.reason.message && !/fetch/i.test(r.reason.message) ? r.reason.message : `${jobs[i].p.name} ist gerade nicht erreichbar.`;
+      if (!session.notes.includes(msg)) session.notes.push(msg);
+    }
   });
-  session.stations = all.map(s => ({ ...s, distKm: distanceKm(session.location, s) })).filter(s => s.distKm <= state.radius);
+  session.stations = [...byId.values()].map(s => ({ ...s, distKm: distanceKm(origin, s) }))
+    .filter(s => (dest ? distanceToSegmentKm(s, origin, dest) : s.distKm) <= state.radius);
   session.loading = false; session.fetchedAt = new Date();
   render();
 }
@@ -243,6 +350,9 @@ const $app = () => document.getElementById('app');
 function render() {
   const el = $app(); if (!el) return;
   const focusId = document.activeElement && document.activeElement.id;
+  // Getipptes in Suchfeldern behalten, auch wenn zwischendurch neu gezeichnet wird
+  const typed = {};
+  el.querySelectorAll('input[type="text"][id]:not([readonly])').forEach(i => { typed[i.id] = i.value; });
   el.innerHTML = `
     <header class="top">
       <div class="top__brand"><span class="pump" aria-hidden="true"></span>Sprit-Rechner</div>
@@ -253,13 +363,14 @@ function render() {
       ${[['rechner', 'Rechner'], ['fahrzeuge', 'Fahrzeuge'], ['einstellungen', 'Einstellungen']].map(([k, l]) =>
         `<button class="tab${view === k ? ' is-on' : ''}" data-view="${k}" ${view === k ? 'aria-current="page"' : ''}>${l}</button>`).join('')}
     </nav>`;
+  Object.keys(typed).forEach(id => { const i = document.getElementById(id); if (i && !i.value) i.value = typed[id]; });
   if (focusId) { const f = document.getElementById(focusId); if (f) { f.focus(); if (f.setSelectionRange && f.type === 'text') f.setSelectionRange(f.value.length, f.value.length); } }
 }
 
 function viewCalc() {
   const v = activeVehicle();
   if (!v) return `<section class="card empty"><h2>Noch kein Fahrzeug</h2><p>Lege zuerst ein Fahrzeug mit Verbrauch und Kraftstoff an.</p><button class="btn" data-view="fahrzeuge">Fahrzeug anlegen</button></section>`;
-  const res = evaluate(session.stations, { consumption: v.consumption, liters: state.liters, roadFactor: state.settings.roadFactor, roundTrip: state.roundTrip, refId: session.refId });
+  const res = evaluate(session.stations, { consumption: v.consumption, liters: state.liters, roadFactor: state.settings.roadFactor, roundTrip: state.roundTrip, refId: session.refId, origin: session.location, dest: session.dest });
   return `
     <section class="vehicles" aria-label="Fahrzeug wählen">
       ${state.vehicles.map(x => `<button class="vchip${x.id === v.id ? ' is-on' : ''}" data-pick="${x.id}" aria-pressed="${x.id === v.id}">
@@ -276,24 +387,34 @@ function viewCalc() {
         <button class="btn" id="btn-locate" data-act="locate">${session.location ? 'Aktualisieren' : 'Standort nutzen'}</button>
       </div>
       <form class="loc__search" data-form="place">
-        <input id="place" type="text" inputmode="search" placeholder="oder Ort suchen, z. B. Rosenheim" autocomplete="off">
+        <input id="place" name="place" type="text" inputmode="search" placeholder="oder Ort suchen, z. B. Rosenheim" autocomplete="off">
         <button class="btn btn--ghost" type="submit">Suchen</button>
       </form>
+      <div class="loc__dest">
+        <span class="label">Ziel (optional)</span>
+        ${session.dest
+          ? `<div class="loc__row"><strong>${esc(session.dest.label)}</strong><button class="btn btn--ghost" data-act="clear-dest">Ziel entfernen</button></div>
+             <span class="muted small">Tankstellen entlang der Strecke, Umweg gegenüber der direkten Fahrt</span>`
+          : `<form class="loc__search" data-form="dest">
+              <input id="dest" name="dest" type="text" inputmode="search" placeholder="Ziel oder Google-Maps-Link einfügen" autocomplete="off">
+              <button class="btn btn--ghost" type="submit">${session.destStatus === 'searching' ? 'Sucht …' : 'Route'}</button>
+            </form>`}
+      </div>
     </section>
 
     <section class="card params">
       <label class="param" for="liters"><span class="label">Tankmenge</span><output class="mono">${state.liters} l</output>
         <input id="liters" type="range" min="5" max="100" step="5" value="${state.liters}" data-set="liters"></label>
-      <label class="param" for="radius"><span class="label">Umkreis</span><output class="mono">${state.radius} km</output>
+      <label class="param" for="radius"><span class="label">${session.dest ? 'Max. Abstand zur Strecke' : 'Umkreis'}</span><output class="mono">${state.radius} km</output>
         <input id="radius" type="range" min="2" max="25" step="1" value="${state.radius}" data-set="radius"></label>
-      <label class="switch" for="roundtrip"><input id="roundtrip" type="checkbox" ${state.roundTrip ? 'checked' : ''} data-set="roundTrip">
-        <span>Rückweg einrechnen <span class="muted">(hin und zurück zum Standort)</span></span></label>
+      ${session.dest ? '' : `<label class="switch" for="roundtrip"><input id="roundtrip" type="checkbox" ${state.roundTrip ? 'checked' : ''} data-set="roundTrip">
+        <span>Rückweg einrechnen <span class="muted">(hin und zurück zum Standort)</span></span></label>`}
     </section>
 
     ${session.notes.length ? `<section class="notes">${session.notes.map(n => `<p>${esc(n)}</p>`).join('')}</section>` : ''}
     ${session.loading ? '<p class="muted center">Preise werden geladen …</p>' : verdict(res, v)}
     ${res.rows.length ? stationList(res) : ''}
-    ${session.fetchedAt ? `<p class="muted small center">Stand ${session.fetchedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} · ${res.rows.length} offene Tankstellen im Umkreis</p>` : ''}`;
+    ${session.fetchedAt ? `<p class="muted small center">Stand ${session.fetchedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} · ${res.rows.length} offene Tankstellen ${session.dest ? 'entlang der Strecke' : 'im Umkreis'}</p>` : ''}`;
 }
 
 function verdict(res, v) {
@@ -304,7 +425,7 @@ function verdict(res, v) {
     return `<section class="verdict verdict--stay">
       <span class="label">Ergebnis</span>
       <h2>Kein Umweg nötig</h2>
-      <p>Tanke bei <b>${esc(res.ref.name)}</b> (${km(res.ref.roadKm)}). Kein Umweg spart mehr als 50 Cent.</p>
+      <p>Tanke bei <b>${esc(res.ref.name)}</b> (${session.dest ? (res.ref.offKm < 0.5 ? 'direkt auf der Strecke' : '+' + km(res.ref.offKm) + ' Umweg') : km(res.ref.roadKm)}). Kein Umweg spart mehr als 50 Cent.</p>
     </section>`;
   }
   return `<section class="verdict verdict--go">
@@ -315,7 +436,9 @@ function verdict(res, v) {
   </section>`;
 }
 
-const navUrl = (s) => `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`;
+const navUrl = (s) => session.dest
+  ? `https://www.google.com/maps/dir/?api=1&destination=${session.dest.lat},${session.dest.lng}&waypoints=${s.lat},${s.lng}&travelmode=driving`
+  : `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}&travelmode=driving`;
 
 function stationList(res) {
   return `<section class="list" aria-label="Tankstellen">
@@ -327,7 +450,7 @@ function stationList(res) {
           <h3>${esc(s.name)} <span class="cc">${s.country}</span>${s.isRef ? ' <span class="pill">Vergleich</span>' : ''}</h3>
           <p class="muted small">${esc(s.address)}</p>
           <dl class="st__facts">
-            <div><dt>Entfernung</dt><dd>${km(s.roadKm)}</dd></div>
+            <div><dt>${session.dest ? 'Abstecher' : 'Entfernung'}</dt><dd>${session.dest ? '+' + km(s.offKm) : km(s.roadKm)}</dd></div>
             ${s.isRef ? '' : `<div><dt>Umweg</dt><dd>+${nf(1).format(s.extraKm)} km</dd></div>
             <div><dt>Umwegkosten</dt><dd>${eur(s.detourCost)}</dd></div>
             <div><dt>Netto</dt><dd class="net">${s.net >= 0 ? '+' : '−'}${eur(Math.abs(s.net))}</dd></div>`}
@@ -383,6 +506,14 @@ function incomingCard() {
     <ul class="sources">${inc.vehicles.map(v => `<li>${plateHtml(v, true)} ${esc(v.name)}</li>`).join('')}</ul>
     <div class="row-end"><button class="btn btn--ghost" data-act="import-no">Abbrechen</button><button class="btn" data-act="import-yes">Übernehmen</button></div>
   </section>`;
+}
+// Aus Google Maps „Teilen“ → Sprit-Rechner (Android, installierte App)
+function readShared() {
+  let p; try { p = new URLSearchParams(location.search); } catch (e) { return ''; }
+  if (!p.has('text') && !p.has('url') && !p.has('title')) return '';
+  const txt = [p.get('title'), p.get('text'), p.get('url')].filter(Boolean).join(' ').trim();
+  try { history.replaceState(null, '', location.pathname); } catch (e) { /* egal */ }
+  return txt;
 }
 function readIncoming() {
   const m = location.hash.match(/^#import=([\w-]+)$/);
@@ -459,7 +590,7 @@ function viewSettings() {
     <section class="card">
       <h2>Datenquellen</h2>
       <ul class="sources">${PROVIDERS.map(p => `<li><span class="cc">${p.country}</span> ${esc(p.credit)}</li>`).join('')}</ul>
-      <p class="muted small">Ortssuche: © OpenStreetMap-Mitwirkende (Nominatim). Alle Angaben ohne Gewähr.</p>
+      <p class="muted small">Ortssuche: Photon (komoot) und Nominatim, © OpenStreetMap-Mitwirkende. Alle Angaben ohne Gewähr.</p>
     </section>`;
 }
 
@@ -479,6 +610,7 @@ function onClick(e) {
     session.confirmDelete = null; save(); render(); return;
   }
   if (d.act === 'locate') return locate();
+  if (d.act === 'clear-dest') { session.dest = null; session.destStatus = 'idle'; session.refId = null; loadStations(); return; }
   if (d.act === 'new') { session.editing = { id: '', plate: '', plateCountry: 'D', name: '', consumption: '', fuel: 'e5' }; render(); return; }
   if (d.act === 'cancel') { session.editing = null; render(); return; }
   if (d.act === 'share') { session.share = session.share ? null : { withKey: true }; render(); return; }
@@ -519,6 +651,7 @@ function onSubmit(e) {
   const f = e.target; e.preventDefault();
   const data = Object.fromEntries(new FormData(f));
   if (f.dataset.form === 'place') return searchPlace(data.place || '');
+  if (f.dataset.form === 'dest') return setDestination(data.dest || '');
   if (f.dataset.form === 'vehicle') {
     const v = { ...session.editing, plate: data.plate.trim().toUpperCase(), plateCountry: data.plateCountry, name: data.name.trim(), consumption: parseFloat(String(data.consumption).replace(',', '.')), fuel: data.fuel, example: false };
     if (!v.id) { v.id = 'v' + Date.now(); state.vehicles.push(v); if (!state.activeId) state.activeId = v.id; }
@@ -540,12 +673,14 @@ function start() {
   document.addEventListener('change', onInput);
   document.addEventListener('submit', onSubmit);
   readIncoming();
+  const shared = readShared();
   render();
+  if (shared) setDestination(shared);
   locate();
   if ('serviceWorker' in navigator && !window.SPRIT_PREVIEW) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 }
 
-if (typeof module !== 'undefined') module.exports = { evaluate, distanceKm, FUELS, PROVIDERS };
+if (typeof module !== 'undefined') module.exports = { evaluate, distanceKm, distanceToSegmentKm, routePoints, parseInput, FUELS, PROVIDERS };
 else start();
