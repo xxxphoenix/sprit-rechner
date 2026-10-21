@@ -2,11 +2,12 @@
 'use strict';
 
 // ---------- Kraftstoffe ----------
-// tk = Tankerkönig-Sorte (DE), ec = E-Control-Sorte (AT; dort gibt es kein eigenes E10)
+// tk = Tankerkönig-Sorte (DE), ec = E-Control-Sorte (AT; dort gibt es kein eigenes E10),
+// fr = Feld der französischen Open-Data-Preise (SP95 = E5, Gazole = Diesel)
 const FUELS = {
-  e5:     { label: 'Super E5',  tk: 'e5',     ec: 'SUP' },
-  e10:    { label: 'Super E10', tk: 'e10',    ec: 'SUP' },
-  diesel: { label: 'Diesel',    tk: 'diesel', ec: 'DIE' },
+  e5:     { label: 'Super E5',  tk: 'e5',     ec: 'SUP', fr: 'sp95' },
+  e10:    { label: 'Super E10', tk: 'e10',    ec: 'SUP', fr: 'e10' },
+  diesel: { label: 'Diesel',    tk: 'diesel', ec: 'DIE', fr: 'gazole' },
 };
 
 // ---------- Preisquellen ----------
@@ -56,7 +57,32 @@ const PROVIDERS = [
       }));
     },
   },
+  {
+    id: 'prix-carburants',
+    country: 'FR',
+    name: 'Prix des carburants (France)',
+    credit: 'Preise Frankreich: prix-carburants.gouv.fr, Ministère de l’Économie (Licence Ouverte)',
+    covers: (lat, lng) => lat > 41.3 && lat < 51.2 && lng > -5.2 && lng < 9.7,
+    async search({ lat, lng, radius, fuel }) {
+      const f = FUELS[fuel].fr;
+      const where = `within_distance(geom, geom'POINT(${lng} ${lat})', ${Math.min(25, radius)}km) and ${f}_prix is not null`;
+      const url = 'https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/prix-des-carburants-en-france-flux-instantane-v2/records'
+        + `?limit=100&where=${encodeURIComponent(where)}`;
+      const data = await fetchJson(url);
+      const weekAgo = Date.now() - 7 * 864e5;
+      return (data.results || []).filter(s => s[f + '_prix'] && s.geom && (!s[f + '_maj'] || Date.parse(s[f + '_maj']) > weekAgo)).map(s => ({
+        id: 'fr-' + s.id,
+        name: titleCase(s.adresse) || titleCase(s.ville) || 'Tankstelle',
+        sub: '',
+        address: `${s.cp || ''} ${titleCase(s.ville)}`.trim(),
+        lat: s.geom.lat, lng: s.geom.lon, open: true,
+        price: +s[f + '_prix'], country: 'FR',
+      }));
+    },
+  },
 ];
+
+const titleCase = (t) => String(t || '').toLowerCase().replace(/(^|[\s'-])\S/g, c => c.toUpperCase());
 
 async function fetchJson(url) {
   const res = await fetch(url, { headers: { Accept: 'application/json' } });
@@ -325,7 +351,7 @@ async function loadStations() {
   session.loading = true; session.notes = []; render();
   if (!jobs.length) {
     session.loading = false; session.stations = [];
-    session.notes = ['Für diesen Standort gibt es noch keine Preisquelle. Unterstützt werden Deutschland und Österreich.'];
+    session.notes = ['Für diesen Standort gibt es noch keine Preisquelle. Unterstützt werden Deutschland, Österreich und Frankreich.'];
     return render();
   }
   const results = await Promise.allSettled(jobs.map(({ p, pt }) => p.search({ lat: pt.lat, lng: pt.lng, radius: pt.rad, fuel: v.fuel, settings: state.settings })));
@@ -521,7 +547,7 @@ function readIncoming() {
   try {
     const data = JSON.parse(b64urlDecode(m[1]));
     const vehicles = (data.vehicles || []).filter(v => v && v.name && FUELS[v.fuel] && +v.consumption > 0).map((v, i) => ({
-      id: 'v' + Date.now() + i, plate: String(v.plate || ''), plateCountry: v.plateCountry === 'A' ? 'A' : 'D',
+      id: 'v' + Date.now() + i, plate: String(v.plate || ''), plateCountry: ['A', 'F'].includes(v.plateCountry) ? v.plateCountry : 'D',
       name: String(v.name), consumption: +v.consumption, fuel: v.fuel, example: false,
     }));
     if (vehicles.length) { session.incoming = { vehicles, tkKey: typeof data.tkKey === 'string' ? data.tkKey : '' }; view = 'fahrzeuge'; }
@@ -561,14 +587,14 @@ function vehicleForm(v) {
     <h2>${v.id ? 'Fahrzeug bearbeiten' : 'Neues Fahrzeug'}</h2>
     <div class="grid2">
       <label for="f-plate"><span class="label">Kennzeichen</span><input id="f-plate" name="plate" required value="${esc(v.plate)}" placeholder="BGL-AB 123" autocapitalize="characters"></label>
-      <label for="f-pc"><span class="label">Land</span><select id="f-pc" name="plateCountry">${['D', 'A'].map(c => `<option ${v.plateCountry === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+      <label for="f-pc"><span class="label">Land</span><select id="f-pc" name="plateCountry">${['D', 'A', 'F'].map(c => `<option ${v.plateCountry === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
     </div>
     <label for="f-name"><span class="label">Bezeichnung</span><input id="f-name" name="name" required value="${esc(v.name)}" placeholder="z. B. VW Golf"></label>
     <div class="grid2">
       <label for="f-cons"><span class="label">Verbrauch (l/100 km)</span><input id="f-cons" name="consumption" type="number" inputmode="decimal" step="0.1" min="1" max="40" required value="${v.consumption == null ? '' : v.consumption}"></label>
       <label for="f-fuel"><span class="label">Kraftstoff</span><select id="f-fuel" name="fuel">${Object.entries(FUELS).map(([k, f]) => `<option value="${k}" ${v.fuel === k ? 'selected' : ''}>${f.label}</option>`).join('')}</select></label>
     </div>
-    <p class="muted small">In Österreich wird für E5 und E10 der Preis für Super 95 verwendet.</p>
+    <p class="muted small">In Österreich wird für E5 und E10 der Preis für Super 95 verwendet, in Frankreich steht E5 für SP95.</p>
     <div class="row-end"><button type="button" class="btn btn--ghost" data-act="cancel">Abbrechen</button><button class="btn" type="submit">Speichern</button></div>
   </form>`;
 }
